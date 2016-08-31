@@ -1,0 +1,616 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Diagnostics;
+using System.Linq;
+using System.ServiceProcess;
+using System.Text;
+using System.Data.SqlClient;
+using System.Net.Mail;
+using System.IO;
+using System.Configuration;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using System.Web;
+
+namespace BirthdayAndAnniversaryService
+{
+    public partial class Service1 : ServiceBase
+    {
+        // new instanse of timer 
+        System.Timers.Timer BirthdayTimer;
+        DataTable datatable = null;
+        public static string logFile = null;
+        public static string filePath = null;
+        int ScheduledHour = Convert.ToInt16(ConfigurationManager.AppSettings["ScheduledHour"].ToString());
+        public Service1()
+        {
+            InitializeComponent();
+        }
+
+        public void onDebug()
+        {
+            OnStart(null);
+        }
+        protected override void OnStart(string[] args)
+        {
+            try
+            {
+                CreateLogFile();
+                Library.WriteErrorLog("Birthday service started ");
+                //Set up the timer
+                BirthdayTimer = new System.Timers.Timer();
+                //set the interval,make the timer enabled and assign the elapsed event of timer
+                BirthdayTimer.Interval = Convert.ToDouble(ConfigurationManager.AppSettings["ServiceRunInterval"].ToString());
+                //  BirthdayTimer.Interval = (1000 * 60 * 60 * 6); // every 6  hour 
+                BirthdayTimer.Enabled = true;
+                BirthdayTimer.AutoReset = true;
+                BirthdayTimer.Elapsed += new System.Timers.ElapsedEventHandler(BirthdayTimer_Elapsed);
+
+              /*  BirthdayTimer_Elapsed(this, null);*/
+            }
+            catch (Exception ex)
+            {
+                Library.WriteErrorLog(ex);
+            }
+        }
+
+        protected override void OnStop()
+        {
+            BirthdayTimer.Stop();
+            this.BirthdayTimer = null;
+            Library.WriteErrorLog("Birthday service stopped  ");
+        }
+
+        public static void CreateLogFile()
+        {
+            logFile = DateTime.Now.ToString("yyyyMMdd") + ".txt";
+            filePath = AppDomain.CurrentDomain.BaseDirectory + logFile;
+            if (!System.IO.File.Exists(AppDomain.CurrentDomain.BaseDirectory + logFile))
+            {
+                FileStream _FileStream = new FileStream(AppDomain.CurrentDomain.BaseDirectory + logFile, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
+                _FileStream.Close();
+                //  System.IO.File.Create(AppDomain.CurrentDomain.BaseDirectory + logFile );
+            }
+        }
+        public void FetchBirthdayEmployeesForCurrentMonth()
+        {
+            CreateLogFile();
+            int month = System.DateTime.Now.Month;
+            int dayOfMonth = System.DateTime.Now.Day;
+
+            String CS = ConfigurationManager.ConnectionStrings["DBCS"].ConnectionString;
+            SqlConnection con = new SqlConnection(CS);
+            try
+            {
+                SqlDataAdapter da = new SqlDataAdapter("GetTodaysBirthlayAndAnniversaryEmployeeList", con);
+                datatable = new DataTable();
+                da.Fill(datatable);
+                int count = datatable.Rows.Count;
+                int InitialEmployeeId = 0;
+                foreach (DataRow row in datatable.Rows)
+                {
+                    if (InitialEmployeeId != Convert.ToInt32((row["EmpId"].ToString())))
+                    {
+                        string Name = row["Name"].ToString();
+                        //Checks whether Birthday mail is already sent or not.
+                        string BDate = (row["DateOfBirth"].ToString());
+                        if (!string.IsNullOrEmpty(BDate))
+                        {
+                            DateTime BirthdayDate = Convert.ToDateTime(row["DateOfBirth"].ToString());
+                            // Double check the logic of birthdays here i.e check for month of the year and day of the month
+                            if (BirthdayDate.Month == month)
+                            {
+                                if (BirthdayDate.Day == dayOfMonth)
+                                {
+                                    if (Convert.ToInt32(row["isBirthdayMailSent"]) == 0)
+                                    {
+                                        Library.WriteErrorLog("Birthday Mail process started for " + Name);
+                                        SendBirthdayMail(row);
+                                        Library.WriteErrorLog("Updating Birthday record for  " + Name);
+                                        updateBirthdayRecord(row);
+                                    }
+                                }
+                            }
+                        }
+
+                        string JDate = (row["Joining_Date"].ToString());
+                        if (!string.IsNullOrEmpty(JDate))
+                        {
+                            DateTime DateOfJoining = Convert.ToDateTime(row["Joining_Date"].ToString());
+                            // Double check the logic of Anniversary here i.e check for month of the year and day of the month
+                            if (DateOfJoining.Month == month)
+                            {
+                                if (DateOfJoining.Day == dayOfMonth)
+                                {
+                                    //Checks whether Anniversary mail is already sent or not.
+
+                                    if (Convert.ToInt32(row["isAnniversaryMailSent"]) == 1)
+                                    {
+                                        Library.WriteErrorLog("Anniversary  Mail process started for " + Name);
+                                        SendAnniversaryMail(row);
+                                        Library.WriteErrorLog("Updating Anniversary record for  " + Name);
+                                        updateAnniversaryRecord(row);
+                                    }
+                                }
+                            }
+                        }
+                        InitialEmployeeId = Convert.ToInt32((row["EmpId"].ToString()));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Library.WriteErrorLog(ex);
+            }
+        }
+        public void updateBirthdayRecord(DataRow dr)
+        {
+            SqlConnection con = new SqlConnection(ConfigurationManager.ConnectionStrings["DBCS"].ToString());
+            string updateCmd = "update Authentication set isBirthdayMailSent=1 where EmpId=@ID";
+
+            SqlCommand cmd = new SqlCommand(updateCmd, con);
+            cmd.Parameters.AddWithValue("@ID", dr["EmpId"]);
+            try
+            {
+                con.Open();
+                //Updating the isBirthdayMailSent column.
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                //In case of any exception write in the log file.
+                Library.WriteErrorLog(ex.Message);
+            }
+            finally
+            {
+                con.Close();
+            }
+        }
+
+        public void updateAnniversaryRecord(DataRow dr)
+        {
+            SqlConnection con = new SqlConnection(ConfigurationManager.ConnectionStrings["DBCS"].ToString());
+            string updateCmd = "update Authentication set isAnniversaryMailSent=1 where EmpId=@ID";
+
+            SqlCommand cmd = new SqlCommand(updateCmd, con);
+            cmd.Parameters.AddWithValue("@ID", dr["EmpId"]);
+            try
+            {
+                con.Open();
+                //Updating the isBirthdayMailSent column.
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                //In case of any exception write in the log file.
+                Library.WriteErrorLog(ex.Message);
+            }
+            finally
+            {
+                con.Close();
+            }
+        }
+
+        protected void BirthdayTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs args)
+        {
+            try
+            {
+                int _CurrentTime = Convert.ToInt16(String.Format("{0}", DateTime.Now.Hour));
+                if (_CurrentTime == ScheduledHour)
+                {
+                    Library.WriteErrorLog("Fetching details of Employees ");
+                    FetchBirthdayEmployeesForCurrentMonth();
+                    Library.WriteErrorLog("Successfully fetched Employees details  ");
+                }
+                //   DateTime scheduledRun = DateTime.Today.AddHours(6);  // runs today at 6am.
+                int year = DateTime.Now.Year;
+                DateTime lastDayOfYear = new DateTime(year, 12, 31);
+                DateTime datetoday = DateTime.Now;
+                if (datetoday.Date == lastDayOfYear.Date)
+                {
+                    Library.WriteErrorLog("Checking functionality for last day of year.");
+                    checkLastDayOfYear();
+                }
+                //Stop the timer
+                //BirthdayTimer.Stop();
+                //ServiceController controller = new ServiceController("BirthdayWisher");
+                //// Stop the service
+                //controller.Stop();
+            }
+            catch (Exception ex)
+            {
+                //In case of any exception write in the log file.
+                Library.WriteErrorLog(ex.Message);
+            }
+            finally
+            {
+            }
+        }
+        public void SendBirthdayMail(DataRow dr)
+        {
+            string TeamInfo = null;
+            String mailServer = ConfigurationManager.AppSettings["MailServer"].ToString();
+            StringBuilder sb = new StringBuilder();
+            MailMessage mail = new MailMessage();
+            // string filePath = Environment.CurrentDirectory;
+
+            string[] strImageFiles = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory + "InitialCopyrightFreeBirthdayBackgroundImages");
+            Random rnd = new Random();
+            int imageFileNumber = rnd.Next(0, strImageFiles.Length);
+            mail.IsBodyHtml = true;
+            mail.Subject = "Happy Birthday";
+            mail.From = new MailAddress(ConfigurationManager.AppSettings["MailFromAddress"].ToString());
+            if (string.IsNullOrEmpty(dr["Email"].ToString()))
+            {
+                Library.WriteErrorLog("This Employee does not exists . Please check or get it removed from Database .");
+                mail.Subject = "Employee does not have Email address in Database .";
+                mail.Bcc.Add("Varun.Tripathi@capita.co.uk");
+                mail.To.Add("Nitin.Sethi@capita.co.uk");
+                sb.Append("<html>");
+                sb.Append("<body>");
+                sb.Append("<p> <b>The Email Adress of Employee" + dr["Name"].ToString() + " is Invalid or the Employee has left Capita . Please Verify </b></p>");
+                // Adding additional logic for application Services Logo .
+                sb.Append(@"<div st><img src=cLogoid:myLogoImageID alt='Application Services Team' ></div>");
+                sb.Append("</body>");
+                sb.Append("</html>");
+                string mailBody = sb.ToString();
+                mail.Priority = MailPriority.Normal;
+                SmtpClient client = new SmtpClient(mailServer);
+                client.Send(mail);
+            }
+            else
+            {
+                mail.To.Add(dr["Email"].ToString());
+                sb.Append("<html>");
+                sb.Append("<body>");
+                sb.Append(@"<div style='margin-left:10px;' ><img src=cid:myImageID alt='BirthdayImage'></div>");
+                sb.Append("<p><b>Note: </b>This is a system generated email. Please do not reply to it.</p>");
+                // Adding additional logic for application Services Logo .
+                sb.Append(@"<div><img src=cid:myLogoImageID alt='Application Services Team' ></div>");
+                sb.Append("</body>");
+                sb.Append("</html>");
+
+                string mailBody = sb.ToString();
+                string fileName = strImageFiles[imageFileNumber];
+                FileStream fs = new FileStream(fileName, System.IO.FileMode.Open);
+                Bitmap bmpimage = (Bitmap)Image.FromStream(fs);
+                //   bmpimage = new Bitmap(bmpimage); // make a copy of it
+                fs.Close();
+                {
+                    using (Graphics objimage = Graphics.FromImage(bmpimage))
+                    {
+                        if (!string.IsNullOrEmpty(dr["Client_DL"].ToString()))
+                        {
+                            string directoryListing = dr["Client_DL"].ToString();
+                            string[] DL_Array = directoryListing.Split(';');
+                            foreach (string DLname in DL_Array)
+                            {
+                                mail.CC.Add(DLname);
+                                Library.WriteErrorLog(DLname + " Taken into account .");
+                            }
+                        }
+                        //Keeping Nitin Sir in loop in cc for mails .
+                        /*mail.Bcc.Add("Nitin.Sethi@capita.co.uk");*/
+                        mail.CC.Add("Nitin.Sethi@capita.co.uk");
+                        mail.Bcc.Add("Varun.Tripathi@capita.co.uk");
+                        if (!string.IsNullOrEmpty(dr["Tower"].ToString()))
+                        {
+                            TeamInfo = dr["Tower"].ToString();
+                        }
+                        // Can write condition in future for checking Long names .
+                        try
+                        {
+                            if (imageFileNumber == 0)
+                            {
+                                string Ename = "Dear" + " " + dr["Name"].ToString() + " " + "!";
+                                objimage.DrawString(Ename, new Font("Trebuchet MS", 75, FontStyle.Italic),
+                                new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(1250, 350));
+                                if ((string.IsNullOrEmpty(TeamInfo) | TeamInfo == null))
+                                {
+                                }
+                                else
+                                {
+                                    objimage.DrawString("(Member of " + TeamInfo + " Team )", new Font("Trebuchet MS", 45, FontStyle.Regular), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(1600, 550));
+                                }
+                                objimage.DrawString("A Very Happy Birthday to you ...", new Font("Trebuchet MS", 60, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(1200, 750));
+                                objimage.DrawString("May coming years be filled with ", new Font("Trebuchet MS", 60, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 133, 102)), new PointF(1100, 900));
+                                objimage.DrawString("Sunshine, Smile, Laughter, Love and Joy!!", new Font("Trebuchet MS", 60, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(1100, 1020));
+                                objimage.DrawString("Wishing you the best & a great year ahead.", new Font("Trebuchet MS", 60, FontStyle.Italic), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(1200, 1180));
+                                objimage.DrawString("From All Of Us", new Font("Trebuchet MS", 60, FontStyle.Italic), new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(1850, 1400));
+                            }
+                            else if (imageFileNumber == 1)
+                            {
+                                string Ename = "Dear" + " " + dr["Name"].ToString() + " " + "!";
+                                objimage.DrawString(Ename, new Font("Trebuchet MS", 65, FontStyle.Italic),
+                                new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(395, 450));
+                                if ((string.IsNullOrEmpty(TeamInfo) | TeamInfo == null))
+                                {
+                                }
+                                else
+                                {
+                                    objimage.DrawString("(Member of " + TeamInfo + " Team )", new Font("Trebuchet MS", 30, FontStyle.Regular), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(780, 530));
+                                }
+
+                                objimage.DrawString("A very Happy Birthday to you ...", new Font("Trebuchet MS", 45, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(310, 560));
+                                objimage.DrawString("May this year be filled with sunshine, smile, laughter and love!!", new Font("Trebuchet MS", 45, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(150, 630));
+                                objimage.DrawString("wishing you the best & a great year ahead.", new Font("Trebuchet MS", 45, FontStyle.Italic), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(250, 700));
+                                objimage.DrawString("From All Of Us", new Font("Trebuchet MS", 35, FontStyle.Italic), new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(1100, 760));
+                            }
+
+                            else if (imageFileNumber == 2)
+                            {
+                                string Ename = "Dear" + " " + dr["Name"].ToString() + " " + "!";
+                                objimage.DrawString(Ename, new Font("Trebuchet MS", 60, FontStyle.Italic),
+                                new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(250, 250));
+                                if ((string.IsNullOrEmpty(TeamInfo) | TeamInfo == null))
+                                {
+                                }
+                                else
+                                {
+                                    objimage.DrawString("(Member of " + TeamInfo + " Team )", new Font("Trebuchet MS", 20, FontStyle.Regular), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(670, 335));
+                                }
+                                objimage.DrawString("A very Happy Birthday to you ...", new Font("Trebuchet MS", 36, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(180, 360));
+                                objimage.DrawString("May this year be filled with sunshine, smile, laughter and love!!", new Font("Trebuchet MS", 36, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(90, 430));
+                                objimage.DrawString("wishing you the best & a great year ahead.", new Font("Trebuchet MS", 36, FontStyle.Italic), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(180, 500));
+                                objimage.DrawString("From All Of Us", new Font("Trebuchet MS", 30, FontStyle.Italic), new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(540, 600));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Library.WriteErrorLog(ex);
+                        }
+                        string Imagename = AppDomain.CurrentDomain.BaseDirectory + "FinalCopyrightFreeBirthdayBackgroundImages\\" + dr["Name"].ToString() + ".jpg";
+
+
+                        //Save the image as a jpg
+                        bmpimage.Save(Imagename, ImageFormat.Jpeg);
+                        //create Alrternative HTML view
+                        AlternateView htmlView = AlternateView.CreateAlternateViewFromString(mailBody, null, "text/html");
+                        //Add Image
+                        LinkedResource theEmailImage = new LinkedResource(Imagename);
+                        theEmailImage.ContentId = "myImageID";
+                        //Add the Image to the Alternate view
+                        htmlView.LinkedResources.Add(theEmailImage);
+                        //Add view to the Email Message
+                        mail.AlternateViews.Add(htmlView);
+                        //  mail.Body = mailBody;
+
+                        // Adding the Logo Image 
+                        string logoImage = AppDomain.CurrentDomain.BaseDirectory + "LogoImagefolder\\" + "logoImage" + ".jpg";
+                        AlternateView htmlViewLogo = AlternateView.CreateAlternateViewFromString(mailBody, null, "text/html");
+                        LinkedResource theLogoImage = new LinkedResource(logoImage);
+                        theLogoImage.ContentId = "myLogoImageID";
+                        //Add the Image to the Alternate view
+                        htmlViewLogo.LinkedResources.Add(theLogoImage);
+                        mail.AlternateViews.Add(htmlViewLogo);
+
+
+                        mail.Priority = MailPriority.Normal;
+                        SmtpClient client = new SmtpClient(mailServer);
+                        Library.WriteErrorLog("Sending birthday email to  " + dr["Name"].ToString());
+
+                        client.Send(mail);
+
+                        objimage.Flush();
+                        objimage.Dispose();
+                        bmpimage.Dispose();
+                        Imagename = null;
+                        Library.WriteErrorLog("Sending birthday successfully sent  to  " + dr["Name"].ToString());
+                    }
+                }
+            }
+        }
+
+        public void SendAnniversaryMail(DataRow dr)
+        {
+
+            DateTime dateOfJoining = Convert.ToDateTime(dr["Joining_Date"]);
+            int YearOfJoining = dateOfJoining.Year;
+            int YearsOfCompletion = DateTime.Now.Year - YearOfJoining;
+
+            string TeamInfo = null;
+            String mailServer = ConfigurationManager.AppSettings["MailServer"].ToString();
+            StringBuilder sb = new StringBuilder();
+            MailMessage mail = new MailMessage();
+            // string filePath = Environment.CurrentDirectory;
+            // string[] strImageFiles = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory + "InitialCopyrightFreeBirthdayBackgroundImages");
+            string[] strImageFiles = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory + "InitialCopyrightFreeAnniversaryBackgroundImages");
+
+            Random rnd = new Random();
+            int imageFileNumber = rnd.Next(0, strImageFiles.Length);
+
+            mail.IsBodyHtml = true;
+            mail.Subject = "Happy Anniversary";
+            mail.From = new MailAddress(ConfigurationManager.AppSettings["MailFromAddress"].ToString());
+            if (string.IsNullOrEmpty(dr["Email"].ToString()))
+            {
+                Library.WriteErrorLog("This Employee does not exists . Please get it removed from Database .");
+                mail.Subject = "Employee does not have Email address in Database .";
+                mail.Bcc.Add("Varun.Tripathi@capita.co.uk");
+                mail.CC.Add("Nitin.Sethi@capita.co.uk");
+                sb.Append("<html>");
+                sb.Append("<body>");
+                sb.Append("<p> <b>The Email Adress of Employee" + dr["Name"].ToString() + " is Invalid or the Employee has left Capita . Please Verify </b></p>");
+                sb.Append("</body>");
+                sb.Append("</html>");
+                string mailBody = sb.ToString();
+                mail.Priority = MailPriority.Normal;
+                SmtpClient client = new SmtpClient(mailServer);
+                client.Send(mail);
+            }
+            else
+            {
+                mail.To.Add(dr["Email"].ToString());
+                sb.Append("<html>");
+                sb.Append("<body>");
+                sb.Append(@"<div style='margin-left:10px;' ><img src=cid:myImageID alt='AnniversaryImage' ></div>");
+                sb.Append("<p> this is a test mail</p>");
+                sb.Append("<p><b>Note: </b>This is a system generated email. Please do not reply to it .  </p>");
+                sb.Append(@"<div><img src=cid:myLogoImageID alt='Application Services Team' ></div>");
+                sb.Append("</body>");
+                sb.Append("</html>");
+
+                string mailBody = sb.ToString();
+                string fileName = strImageFiles[imageFileNumber];
+                FileStream fs = new FileStream(fileName, System.IO.FileMode.Open);
+                Bitmap bmpimage = (Bitmap)Image.FromStream(fs);
+
+                fs.Close();
+
+                {
+                    using (Graphics objimage = Graphics.FromImage(bmpimage))
+                    {
+                        if (!string.IsNullOrEmpty(dr["Client_DL"].ToString()))
+                        {
+                            string directoryListing = dr["Client_DL"].ToString();
+                            string[] DL_Array = directoryListing.Split(';');
+                            foreach (string DLname in DL_Array)
+                            {
+                                mail.CC.Add(DLname);
+                                Library.WriteErrorLog(DLname + " Taken into account .");
+                            }
+                        }
+                        //Keeping Nitin Sir in loop in Bcc for mails .
+                        // mail.Bcc.Add("Nitin.Sethi@capita.co.uk");
+                        mail.Bcc.Add("Varun.Tripathi@capita.co.uk");
+                        mail.CC.Add("Nitin.Sethi@capita.co.uk");
+
+
+                        if (!string.IsNullOrEmpty(dr["Tower"].ToString()))
+                        {
+                            TeamInfo = dr["Tower"].ToString();
+                        }
+                        // Can write condition in future for checking Long names .
+                        try
+                        {
+                            if (imageFileNumber == 0)
+                            {
+                                string Ename = "Dear" + " " + dr["Name"].ToString() + " " + "!!";
+                                objimage.DrawString(Ename, new Font("Trebuchet MS", 12, FontStyle.Italic),
+                                new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(640, 520));
+                                if ((string.IsNullOrEmpty(TeamInfo) | TeamInfo == null))
+                                {
+                                }
+                                else
+                                {
+                                    objimage.DrawString("(Member of " + TeamInfo + " Team )", new Font("Trebuchet MS", 7, FontStyle.Regular), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(800, 587));
+                                }
+                                objimage.DrawString("Congratulations !! You Completed ", new Font("Trebuchet MS", 11, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(670, 635));
+                                objimage.DrawString("\"" + YearsOfCompletion + "\"", new Font("Trebuchet MS", 30, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(930, 720));
+                                objimage.DrawString("Successful Year(s) today in Capita...", new Font("Trebuchet MS", 11, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(660, 870));
+
+
+                                objimage.DrawString("May you continue to inspire us", new Font("Trebuchet MS", 11, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 133, 102)), new PointF(630, 950));
+                                objimage.DrawString("for many years to come !!!", new Font("Trebuchet MS", 11, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 133, 102)), new PointF(920, 1020));
+                                objimage.DrawString("And may you always remember how much", new Font("Trebuchet MS", 11, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(623, 1100));
+
+                                objimage.DrawString(" you are ", new Font("Trebuchet MS", 23, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(830, 1170));
+
+                                objimage.DrawString("Loved,Needed,Respected and Valued!!", new Font("Trebuchet MS", 12, FontStyle.Italic), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(624, 1310));
+                                objimage.DrawString(" Happy Anniversary !!!", new Font("Trebuchet MS", 19, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(650, 1400));
+                                objimage.DrawString("From All Of Us", new Font("Trebuchet MS", 12, FontStyle.Italic), new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(1100, 1550));
+                            }
+                            else if (imageFileNumber == 1)
+                            {
+                                string Ename = "Dear" + " " + dr["Name"].ToString() + " " + "!!";
+                                objimage.DrawString(Ename, new Font("Trebuchet MS", 10, FontStyle.Italic),
+                                new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(735, 675));
+                                if ((string.IsNullOrEmpty(TeamInfo) | TeamInfo == null))
+                                {
+                                }
+                                else
+                                {
+                                    objimage.DrawString("(Member of " + TeamInfo + " Team )", new Font("Trebuchet MS", 6, FontStyle.Regular), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(870, 730));
+                                }
+                                objimage.DrawString("Congratulations !! You Completed ", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(755, 765));
+                                objimage.DrawString("\"" + YearsOfCompletion + "\"", new Font("Trebuchet MS", 30, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(975, 835));
+                                objimage.DrawString("Successful Year(s) today in Capita...", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(750, 980));
+
+
+                                objimage.DrawString("May you continue to inspire us", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 133, 102)), new PointF(740, 1070));
+                                objimage.DrawString("for many years to come !!!", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 133, 102)), new PointF(920, 1140));
+                                objimage.DrawString("And may you always remember how much", new Font("Trebuchet MS", 9, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(740, 1220));
+
+                                objimage.DrawString(" you are ", new Font("Trebuchet MS", 20, FontStyle.Italic), new SolidBrush(Color.FromArgb(0, 91, 130)), new PointF(915, 1280));
+
+                                objimage.DrawString("Loved,Needed,Respected and Valued!!", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(145, 0, 75)), new PointF(735, 1405));
+                                objimage.DrawString(" Happy Anniversary !!!", new Font("Trebuchet MS", 18, FontStyle.Italic), new SolidBrush(Color.FromArgb(202, 0, 93)), new PointF(720, 1480));
+                                objimage.DrawString("From All Of Us", new Font("Trebuchet MS", 10, FontStyle.Italic), new SolidBrush(Color.FromArgb(79, 38, 131)), new PointF(1120, 1630));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Library.WriteErrorLog(ex);
+                        }
+                        string Imagename = AppDomain.CurrentDomain.BaseDirectory + "FinalCopyrightFreeAnniversaryBackgroundImages\\" + dr["Name"].ToString() + ".jpg";
+
+                        //Save the image as a jpg
+                        bmpimage.Save(Imagename, ImageFormat.Jpeg);
+                        //create Alrternative HTML view
+                        AlternateView htmlView = AlternateView.CreateAlternateViewFromString(mailBody, null, "text/html");
+                        //Add Image
+                        LinkedResource theEmailImage = new LinkedResource(Imagename);
+                        theEmailImage.ContentId = "myImageID";
+                        //Add the Image to the Alternate view
+                        htmlView.LinkedResources.Add(theEmailImage);
+                        //Add view to the Email Message
+                        mail.AlternateViews.Add(htmlView);
+                        //  mail.Body = mailBody;
+
+
+                        // Adding the Logo Image 
+                        string logoImage = AppDomain.CurrentDomain.BaseDirectory + "LogoImagefolder\\" + "logoImage" + ".jpg";
+                        AlternateView htmlViewLogo = AlternateView.CreateAlternateViewFromString(mailBody, null, "text/html");
+                        LinkedResource theLogoImage = new LinkedResource(logoImage);
+                        theLogoImage.ContentId = "myLogoImageID";
+                        //Add the Image to the Alternate view
+                        htmlViewLogo.LinkedResources.Add(theLogoImage);
+                        mail.AlternateViews.Add(htmlViewLogo);
+                        mail.Priority = MailPriority.Normal;
+                        SmtpClient client = new SmtpClient(mailServer);
+                        Library.WriteErrorLog("Sending anniversary email to  " + dr["Name"].ToString());
+                        
+                        client.Send(mail);
+
+                        objimage.Flush();
+                        objimage.Dispose();
+                        bmpimage.Dispose();
+                        Imagename = null;
+
+                        Library.WriteErrorLog("Sending anniversary successfully sent  to  " + dr["Name"].ToString());
+                    }
+                }
+            }
+        }
+        public void checkLastDayOfYear()
+        {
+            SqlConnection con = new SqlConnection(ConfigurationManager.ConnectionStrings["DBCS"].ToString());
+            Library.WriteErrorLog("Updating database for New Year Logic .");
+            string updateCmd = "update EmployeeBirthdayDetailsTable set isAnniversaryMailSent =0 , isBirthdayMailSent=0";
+            SqlCommand cmd = new SqlCommand(updateCmd, con);
+            try
+            {
+                con.Open();
+                //Updating the isBirthdayMailSent column.
+                cmd.ExecuteNonQuery();
+                Library.WriteErrorLog("Updated the database for isAnniversaryMailSent and isBirthdayMailSent column for new year.");
+            }
+            catch (Exception ex)
+            {
+                //In case of any exception write in the log file.
+                Library.WriteErrorLog("Error occured while checking logic of new year .");
+                Library.WriteErrorLog(ex.Message);
+            }
+            finally
+            {
+                con.Close();
+            }
+        }
+    }
+}
+
+
